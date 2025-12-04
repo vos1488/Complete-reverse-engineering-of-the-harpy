@@ -25,7 +25,8 @@
 | **Архитектура** | ARM64e (Apple iOS jailbreak tweak) |
 | **Размер** | 441,336 байт (0x6BBF8) |
 | **MD5** | `d0701a2f9fb3e92853472d0298bd4415` |
-| **SHA256** | Требуется вычисление |
+| **SHA256** | `43ff6e3d659361b4f53fe756642928a32df9c7111d2f6015417c10dab233bddb` |
+| **CRC32** | `0x77355620` |
 | **Путь установки** | `/Library/MobileSubstrate/DynamicLibraries/harpy.dylib` |
 | **Язык** | Swift 5 + Objective-C interop |
 | **Min iOS Version** | iOS 14.0+ (предположительно) |
@@ -126,7 +127,50 @@
 
 ---
 
-## 🚀 Точка входа (Entry Point)
+## 🚀 Точка входа и механизм инъекции
+
+### Архитектура инъекции
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    /Library/MobileSubstrate/                    │
+│                   DynamicLibraries/harpy.dylib                  │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ dylib load (automatic)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              +[SwiftUIWrapper startMonitoring]                  │
+│                        (0xBF1C)                                 │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              SwiftUIWrapper_setupTimer (0xBD14)                 │
+│  • NSTimer.scheduledTimerWithTimeInterval: 60 sec, repeat      │
+│  • Check: NSProcessInfo.isLowPowerModeEnabled                  │
+│  • If true → presentContentView()                               │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ isLowPowerModeEnabled == YES
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│         SwiftUIWrapper_injectHarpyUI (0xE5F0)                   │
+│  • UIApplication.sharedApplication.connectedScenes             │
+│  • Find active UIWindowScene (activationState == 0)            │
+│  • Get first window from scene.windows                         │
+│  • Create UIHostingController<ContentView>                     │
+│  • Add as subview with full-screen constraints                 │
+│  • Animate alpha 0→1 over 0.3s                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### ⚠️ Триггер активации
+
+**Low Power Mode** используется как триггер для показа UI:
+- Когда пользователь включает режим энергосбережения
+- Таймер проверяет `isLowPowerModeEnabled` каждые 60 секунд
+- При положительном значении инъектирует UI в активное окно
+
+Это необычный выбор триггера — возможно, для обхода обнаружения или как "фича" для пользователя.
 
 ### sub_4000 — Dylib Initialization
 
@@ -595,9 +639,21 @@ void HarpyNetwork_onConnectionReady(context) {
 // Адрес: 0x2BB6C (переименовано: HarpyNetwork_receiveData)
 void HarpyNetwork_receiveData(data, context, isComplete, error) {
     if (error == nil) {
-        // Парсинг JSON ответа
+        // Парсинг JSON ответа через JSONDecoder
         JSONDecoder *decoder = JSONDecoder.init();
         ResponsePayload response = JSONDecoder.decode(from: data);
+        
+        // Проверка наличия поля "error" в ответе
+        // sub_DB3C(0x726F727265LL, 0xE500000000000000LL) = "error"
+        if (response.error != nil) {
+            // Обработка ошибки - показ на main queue
+            dispatch_async(main_queue, errorHandler);
+        } else {
+            // Успешный ответ - обновление HarpyLogger
+            dispatch_async(main_queue, updateHandler);
+        }
+    }
+}
         
         // Проверка на ошибку ("error" в ответе)
         if (swift_bridgeObjectRetain(response) && 
@@ -801,6 +857,233 @@ Button {
 
 ---
 
+## 🗄️ Управление файлами и скриптами
+
+### Harpy_ensureScriptDirectory (0x49AC4) — Создание директории
+
+```c
+// Адрес: 0x49AC4 
+// Создает директорию "harpyscript" в Documents если не существует
+void Harpy_ensureScriptDirectory() {
+    // 1. Получение директории Documents
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *urls = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
+    NSURL *documentsURL = urls[0];
+    
+    // 2. Добавление пути "harpyscript" (0x7263737970726168 + 0xEB00000000747069 = "harpyscript")
+    NSURL *scriptDir = [documentsURL URLByAppendingPathComponent:@"harpyscript"];
+    
+    // 3. Проверка существования
+    if (![fm fileExistsAtPath:scriptDir.path]) {
+        // 4. Создание директории
+        NSError *error = nil;
+        [fm createDirectoryAtURL:scriptDir 
+         withIntermediateDirectories:YES 
+         attributes:nil 
+         error:&error];
+         
+        if (error) {
+            // Логирование ошибки через State.wrappedValue
+        }
+    }
+}
+```
+
+### Harpy_saveScriptConfig (0x49528) — Сохранение конфигурации
+
+```c
+// Адрес: 0x49528
+// Сохраняет текущий скрипт в файл harpyconfig.txt
+void Harpy_saveScriptConfig(String script) {
+    // 1. Получение директории
+    NSURL *dir = Harpy_getScriptDirectory();
+    
+    // 2. Добавление имени файла "harpyconfig.txt"
+    // 0x6E6F637970726168 = "harpycon"
+    // 0xEF7478742E676966 = "fig.txt"
+    NSURL *configURL = URL.appendingPathComponent("harpyconfig.txt");
+    
+    // 3. Запись с UTF-8 кодировкой
+    [script writeToURL:configURL 
+           atomically:YES 
+           encoding:NSUTF8StringEncoding 
+           error:nil];
+    
+    // 4. Обновление State - "Script saved successfully"
+    // 0x8000000000051040 + 0x1000000000000032 = строка статуса
+    State.wrappedValue.setter(statusString);
+    
+    // 5. Обновление списка файлов
+    Harpy_filterScriptFiles();  // sub_45AA4
+}
+```
+
+### Harpy_listDirectoryContents (0x48C0C) — Чтение директории
+
+```c
+// Адрес: 0x48C0C
+// Возвращает содержимое директории скриптов
+String Harpy_listDirectoryContents() {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *dir = Harpy_getScriptDirectory();
+    
+    // Получение списка файлов
+    NSArray *contents = [fm contentsOfDirectoryAtURL:dir 
+                            includingPropertiesForKeys:nil 
+                            options:0 
+                            error:nil];
+    
+    // Формирование строки с переносами "\n"
+    NSMutableString *result = [NSMutableString string];
+    for (NSURL *file in contents) {
+        [result appendFormat:@"%@\n", file.lastPathComponent];
+    }
+    
+    return result;
+}
+```
+
+### Harpy_filterScriptFiles (0x45AA4) — Фильтрация .txt файлов
+
+```c
+// Адрес: 0x45AA4
+// Фильтрует файлы по расширению .txt
+void Harpy_filterScriptFiles() {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *path = Harpy_getScriptDirectory().path;
+    
+    NSArray *files = [fm contentsOfDirectoryAtPath:path error:nil];
+    NSMutableArray *txtFiles = [NSMutableArray array];
+    
+    for (NSString *file in files) {
+        // Проверка расширения: 0x7478742E = ".txt"
+        if ([file hasSuffix:@".txt"]) {
+            [txtFiles addObject:file];
+        }
+    }
+    
+    // Обновление State.wrappedValue с отфильтрованным списком
+    State.wrappedValue.setter(txtFiles);
+}
+```
+
+### Harpy_writeFileToPath (0x4877C) — Запись файла
+
+```c
+// Адрес: 0x4877C
+// Записывает данные в указанный путь
+void Harpy_writeFileToPath(NSURL *baseURL, String filename, String content) {
+    // Добавление имени файла к пути
+    NSURL *fileURL = URL.appendingPathComponent(filename);
+    
+    // Кодировка UTF-8
+    NSStringEncoding encoding = static String.Encoding.utf8.getter();
+    
+    // Запись файла
+    StringProtocol.write(to:atomically:encoding:)(
+        content, fileURL, YES, encoding);
+}
+```
+
+---
+
+## 🔐 Работа с Keychain
+
+### Harpy_updateKeychainValue (0x469AC) — Обновление ключа
+
+```c
+// Адрес: 0x469AC
+// Обновляет значение в Keychain
+void Harpy_updateKeychainValue(String key, String value) {
+    // 1. Формирование query словаря
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount: key
+    };
+    
+    // 2. Конвертация значения в Data (UTF-8)
+    NSData *valueData = [value dataUsingEncoding:NSUTF8StringEncoding];
+    
+    // 3. Формирование attributes для обновления
+    NSDictionary *attributes = @{
+        (__bridge id)kSecValueData: valueData
+    };
+    
+    // 4. Обновление через SecItemUpdate
+    OSStatus status = SecItemUpdate(
+        (__bridge CFDictionaryRef)query,
+        (__bridge CFDictionaryRef)attributes);
+}
+```
+
+### Harpy_readKeychainEntry (0x4A0A0) — Чтение записи
+
+```c
+// Адрес: 0x4A0A0
+// Читает запись из Keychain и форматирует результат
+String Harpy_readKeychainEntry(Dictionary keychainData) {
+    // Извлечение kSecAttrAccount и kSecValueData
+    String account = keychainData[kSecAttrAccount];
+    Data valueData = keychainData[kSecValueData];
+    
+    // Декодирование Data в String (UTF-8)
+    String value = String(data: valueData, encoding: .utf8) ?? "unknown";
+    
+    // Формирование строки результата: "account: value"
+    // 0x203A = ": "
+    return account + ": " + value;
+}
+```
+
+---
+
+## 🌐 HTTP-запросы
+
+### Harpy_sendHTTPRequest (0x47FD8) — POST запрос
+
+```c
+// Адрес: 0x47FD8
+// Отправляет POST запрос с JSON телом
+void Harpy_sendHTTPRequest(String urlString, Dictionary payload) {
+    // 1. Создание URL
+    URL url = URL.init(string: urlString);
+    
+    // 2. Создание URLRequest
+    URLRequest request = URLRequest.init(
+        url: url, 
+        cachePolicy: 0, 
+        timeoutInterval: 60.0);
+    
+    // 3. Установка метода POST (0x54534F50 = "POST")
+    request.httpMethod = "POST";
+    
+    // 4. Заголовок Content-Type
+    // 0x2D746E65746E6F43 = "Conten-t"
+    // 0xEC00000065707954 = "Type"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type");
+    
+    // 5. Сериализация JSON
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload 
+                                           options:0 
+                                           error:nil];
+    request.httpBody = jsonData;
+    
+    // 6. Создание задачи через sharedSession
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request 
+                                          completionHandler:^(NSData *data, 
+                                                             NSURLResponse *response, 
+                                                             NSError *error) {
+        // Обработка ответа
+    }];
+    
+    // 7. Запуск задачи
+    [task resume];
+}
+```
+
+---
+
 ## 📦 Импорты и зависимости
 
 ### Swift Runtime
@@ -917,10 +1200,28 @@ harpy.dylib                   (путь установки)
 
 | Тип | Значение | Описание |
 |-----|----------|----------|
-| IP | `92.246.138.114` | C2 сервер |
-| Port | `4001/tcp` | C2 порт |
-| Domain | `t.me/harpyapp_bot` | Telegram exfiltration |
-| URL | `i.ibb.co/SKYxFp1/logos.png` | Payload indicator |
+| **IP** | `92.246.138.114` | C2 сервер (TCP) |
+| **Port** | `4001/tcp` | C2 порт (NWConnection) |
+
+### Telegram IoC
+
+| URL | Описание |
+|-----|----------|
+| `https://t.me/harpyapp_bot` | Telegram бот для эксфильтрации |
+| `https://t.me/harpysupport` | Канал поддержки |
+| `https://t.me/harpyapp` | Основной канал |
+| `https://t.me/imharpy` | Канал разработчика |
+| `https://t.me/lurizevl` | Канал разработчика |
+
+### Image Hosting IoC
+
+| URL | Описание |
+|-----|----------|
+| `https://i.ibb.co/SKYxFp1/logos.png` | Логотип (2 xrefs) |
+| `https://i.ibb.co/BwMHWm4/Group-254.png` | UI asset |
+| `https://i.ibb.co/KWbdS7b/Group-258.png` | UI asset |
+| `https://i.ibb.co/h8DLvFG/Group-257.png` | UI asset |
+| `https://i.ibb.co/m4wbRrK/Group-251.png` | UI asset |
 
 ### File IoC
 
@@ -928,15 +1229,18 @@ harpy.dylib                   (путь установки)
 |------|----------|
 | `/Library/MobileSubstrate/DynamicLibraries/harpy.dylib` | Основной модуль |
 | `Documents/harpyconfig.txt` | Файл конфигурации |
-| `*.txt` в Documents | Скрипты Harpy |
+| `Documents/harpyscript/` | Директория скриптов |
 
 ### Behavioral IoC
 
-- Обращение к `NSUserDefaults.standardUserDefaults`
-- Вызовы `SecItemDelete`, `SecItemUpdate`
-- TCP соединение на порт 4001
+- Проверка `NSProcessInfo.isLowPowerModeEnabled` каждые 60 сек (триггер инъекции)
+- Обращение к `NSUserDefaults.standardUserDefaults.dictionaryRepresentation`
+- Вызовы `SecItemCopyMatching` с `kSecMatchLimitAll` (dump всего Keychain)
+- Вызовы `SecItemDelete`, `SecItemUpdate` (модификация Keychain)
+- TCP соединение на порт 4001 через Network.framework
 - Загрузка изображений с `ibb.co`
 - Regex парсинг с паттернами `.harpy.*`
+- JSON payload с полями: `telegramId`, `data`, `action`
 
 ### YARA Rule (Draft)
 
@@ -1052,6 +1356,71 @@ rule Harpy_iOS_Tweak {
 3. **Swift Demangler** — разбор Swift symbol names
 4. **Строковой анализ** — поиск URL, IP, путей, команд
 5. **Cross-reference анализ** — построение call graph
+
+---
+
+## 🏷️ Полный список переименованных функций
+
+### UI Functions (3)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x288DC` | `HarpyUI_buildTextPair` | 0x5ac | Создание пары текстовых View |
+| `0x290E0` | `HarpyUI_buildTelegramButton` | 0x82c | Создание кнопки ссылки на Telegram |
+| `0x2990C` | `HarpyUI_buildInfoCard` | 0x9e0 | Создание информационной карточки |
+
+### Network Functions (5)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x2A2EC` | `HarpyNetwork_connectToServer` | 0x330 | TCP соединение к 92.246.138.114:4001 |
+| `0x2AA6C` | `HarpyNetwork_onStateChange` | 0x3d4 | Обработчик изменения состояния NWConnection |
+| `0x2AE40` | `HarpyNetwork_onConnectionReady` | 0x8cc | Отправка JSON payload при подключении |
+| `0x2B710` | `HarpyNetwork_sendComplete` | 0x454 | Callback завершения отправки |
+| `0x2BB6C` | `HarpyNetwork_receiveData` | 0x88c | Приём и парсинг JSON ответа |
+
+### Script Engine Functions (4)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x42B54` | `HarpyScript_executeCommands` | 0x2918 | Главный парсер DSL (1883 строки) |
+| `0x48464` | `Harpy_parseScriptCommand` | 0x318 | Парсинг отдельной команды |
+| `0x490C8` | `Harpy_executeScript` | 0x460 | Выполнение скрипта из файла |
+| `0x4AA48` | `Harpy_createRegex` | 0xdc | Создание NSRegularExpression |
+
+### Data Management Functions (11)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x46654` | `Harpy_readUserDefaults` | 0x33c | Чтение всех UserDefaults |
+| `0x469AC` | `Harpy_updateKeychainValue` | 0x2e8 | Обновление значения в Keychain |
+| `0x46C94` | `Harpy_editKeychain` | 0x12c | Редактирование записи Keychain |
+| `0x46DC0` | `Harpy_readKeychain` | 0x370 | Чтение всех записей Keychain |
+| `0x47130` | `Harpy_updateCoreData` | 0x404 | Обновление сущности CoreData |
+| `0x47534` | `Harpy_updateCoreDataBatch` | 0x7c8 | Пакетное обновление CoreData |
+| `0x47CFC` | `Harpy_writeFile` | 0x2dc | Запись данных в файл |
+| `0x47FD8` | `Harpy_sendHTTPRequest` | 0x470 | HTTP POST запрос |
+| `0x4877C` | `Harpy_writeFileToPath` | 0x490 | Запись файла по указанному пути |
+| `0x49528` | `Harpy_saveScriptConfig` | 0x59c | Сохранение в harpyconfig.txt |
+| `0x4A0A0` | `Harpy_readKeychainEntry` | 0x2e4 | Чтение одной записи Keychain |
+
+### File System Functions (1)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x49AC4` | `Harpy_ensureScriptDirectory` | 0x5dc | Создание Documents/harpyscript |
+
+### Logger Functions (1)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x2DC1C` | `HarpyLogger_wrapCallback` | 0xb0 | Wrapper для callback логгера |
+
+### Injection & Lifecycle Functions (6)
+| Адрес | Имя | Размер | Описание |
+|-------|-----|--------|----------|
+| `0x35C00` | `UserData_init` | 0x1f8 | Инициализатор UserData класса |
+| `0x3BEE0` | `AppState_onStartPressed` | 0x3f8 | Обработчик нажатия Start |
+| `0xBD14` | `SwiftUIWrapper_setupTimer` | 0x138 | NSTimer каждые 60 сек |
+| `0xBF1C` | `SwiftUIWrapper_startMonitoring` | 0x28 | Точка входа мониторинга |
+| `0xC280` | `SwiftUIWrapper_dismissUI` | 0x2d8 | Скрытие Harpy UI |
+| `0xE5F0` | `SwiftUIWrapper_injectHarpyUI` | 0xa24 | Инъекция UI в целевое приложение |
+
+**Итого: 31 переименованная функция**
 
 ---
 
